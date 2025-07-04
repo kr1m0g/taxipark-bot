@@ -39,7 +39,7 @@ def append_user_to_vehicles(car_number, user_id, username):
     worksheet = sheet.worksheet("Vehicles")
     all_values = worksheet.get_all_values()
 
-    for i, row in enumerate(all_values[1:], start=2):
+    for i, row in enumerate(all_values[1:], start=2):  # с 2 строки
         existing_car = row[0].strip().upper() if len(row) > 0 else ""
         existing_id = row[1].strip() if len(row) > 1 else ""
 
@@ -47,10 +47,11 @@ def append_user_to_vehicles(car_number, user_id, username):
             if existing_id:
                 raise ValueError("Этот автомобиль уже зарегистрирован другим водителем.")
             else:
-                worksheet.update(f"B{i}", str(user_id))
-                worksheet.update(f"C{i}", username or "")
+                worksheet.update_cell(i, 2, str(user_id))  # B
+                worksheet.update_cell(i, 3, username or "")  # C
                 return
 
+    # если не нашли — добавляем новую строку
     worksheet.append_row([car_number, str(user_id), username or ""])
 
 # Состояния

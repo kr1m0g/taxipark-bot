@@ -43,30 +43,56 @@ def append_user_to_vehicles(car_number, user_id, username):
     for record in existing_records:
         if str(record.get("ID", "")) == str(user_id):
             return
-    worksheet.append_row([car_number, username or "", str(user_id)])
+    worksheet.append_row([car_number, str(user_id), username or ""])
 
 # Состояния
-WAITING_CAR_REGISTRATION, WAITING_PHOTO1, WAITING_PHOTO2, WAITING_CAR_NUMBER = range(4)
+WAITING_CAR_SEARCH, WAITING_CAR_CHOICE, WAITING_PHOTO1, WAITING_PHOTO2, WAITING_CAR_NUMBER = range(5)
 
 user_data_storage = {}
+selected_indices = set()
 
-# Хендлер команды /start
+# /start
 async def start_handler(update: Update, context: CallbackContext):
-    await update.message.reply_text("👋 Добро пожаловать!\nПожалуйста, введите номер вашего автомобиля (например: А123АА):")
-    return WAITING_CAR_REGISTRATION
+    await update.message.reply_text("👋 Добро пожаловать!\nВведите первые 3 символа номера автомобиля:")
+    return WAITING_CAR_SEARCH
 
-# Обработка номера авто при регистрации
-async def register_car_number(update: Update, context: CallbackContext):
-    car_number = update.message.text.strip().upper()
-    user_id = update.effective_user.id
-    username = update.effective_user.username
+# Поиск по 3 символам
+async def search_car_number(update: Update, context: CallbackContext):
+    partial = update.message.text.strip().upper()
+    if len(partial) < 3:
+        await update.message.reply_text("Введите минимум 3 символа номера авто.")
+        return WAITING_CAR_SEARCH
+
+    vehicle_data = load_vehicle_data()
+    matches = [v for v in vehicle_data if v["Номер авто"].startswith(partial)]
+
+    if not matches:
+        await update.message.reply_text("🚫 Ничего не найдено. Попробуйте ещё.")
+        return WAITING_CAR_SEARCH
+
+    keyboard = [
+        [InlineKeyboardButton(v["Номер авто"], callback_data=f"choose_{v['Номер авто']}")]
+        for v in matches
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Выберите ваш автомобиль:", reply_markup=reply_markup)
+    return WAITING_CAR_CHOICE
+
+# Выбор авто из списка
+async def choose_car_button(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    car_number = query.data.replace("choose_", "")
+    user_id = query.from_user.id
+    username = query.from_user.username
+
     try:
         append_user_to_vehicles(car_number, user_id, username)
-        await update.message.reply_text("✅ Вы успешно зарегистрированы! Теперь отправьте первое фото автомобиля.")
+        await query.edit_message_text(f"✅ Вы выбрали автомобиль: {car_number}\nТеперь отправьте первое фото.")
         return WAITING_PHOTO1
     except Exception as e:
-        logger.error(f"Ошибка добавления пользователя в Vehicles: {e}")
-        await update.message.reply_text("⚠️ Ошибка при регистрации. Попробуйте позже.")
+        logger.error(f"Ошибка регистрации: {e}")
+        await query.edit_message_text("Ошибка при регистрации. Попробуйте позже.")
         return ConversationHandler.END
 
 # Фото 1
@@ -91,20 +117,19 @@ async def handle_photo2(update: Update, context: CallbackContext):
     await update.message.reply_text("✅ Фото 2 получено. Теперь отправьте номер автомобиля (например: А123АА).")
     return WAITING_CAR_NUMBER
 
-# Финальное сохранение
+# Завершение — сохранить в Inspections
 async def handle_car_number(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     car_number = update.message.text.strip().upper()
     user_data = user_data_storage.get(chat_id, {})
     photo1 = user_data.get("photo1")
     photo2 = user_data.get("photo2")
-    phone = update.effective_user.username or update.effective_user.id
     now = datetime.now()
     row = [
         now.strftime("%d.%m.%Y"),
         now.strftime("%H:%M"),
         car_number,
-        phone,
+        update.effective_user.username or "",
         photo1,
         photo2,
         update.effective_user.id
@@ -117,7 +142,7 @@ async def handle_car_number(update: Update, context: CallbackContext):
         await update.message.reply_text("⚠️ Ошибка при сохранении данных.")
     return ConversationHandler.END
 
-# Админ-панель
+# /admin — панель выбора авто
 async def admin_handler(update: Update, context: CallbackContext):
     vehicle_data = load_vehicle_data()
     keyboard = []
@@ -128,9 +153,7 @@ async def admin_handler(update: Update, context: CallbackContext):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Выберите автомобили и отправьте напоминание:", reply_markup=reply_markup)
 
-# Выбор и рассылка
-selected_indices = set()
-
+# Обработка кнопок админа
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
@@ -146,25 +169,24 @@ async def button_handler(update: Update, context: CallbackContext):
         for idx in selected_indices:
             try:
                 entry = vehicle_data[idx]
-                phone = entry["Телефон водителя"]
-                phone_str = str(phone)
-                if phone_str.startswith("+"):
-                    await context.bot.send_message(chat_id=phone_str, text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто.")
+                user_id = entry.get("ID")
+                if user_id:
+                    await context.bot.send_message(chat_id=int(user_id),
+                        text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто.")
             except Exception as e:
                 logger.error(f"Ошибка отправки уведомления: {e}")
         await query.edit_message_text("✅ Напоминания отправлены.")
 
-# Запуск
+# Запуск бота
 def main():
     app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start_handler),
-            MessageHandler(filters.PHOTO, handle_photo1),
-        ],
+        entry_points=[CommandHandler("start", start_handler)],
         states={
-            WAITING_CAR_REGISTRATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_car_number)],
+            WAITING_CAR_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_car_number)],
+            WAITING_CAR_CHOICE: [CallbackQueryHandler(choose_car_button, pattern=r"^choose_")],
+            WAITING_PHOTO1: [MessageHandler(filters.PHOTO, handle_photo1)],
             WAITING_PHOTO2: [MessageHandler(filters.PHOTO, handle_photo2)],
             WAITING_CAR_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_car_number)],
         },

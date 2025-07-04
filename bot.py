@@ -34,6 +34,7 @@ SERVICE_ACCOUNT_FILE = "credentials.json"
 # Состояния
 WAITING_CAR_SEARCH, WAITING_CAR_CHOICE, WAITING_PHOTO1, WAITING_PHOTO2 = range(4)
 user_data_storage = {}
+selected_indices = set()
 
 # Главное меню
 main_menu_keyboard = ReplyKeyboardMarkup(
@@ -44,7 +45,7 @@ main_menu_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# --- Google Sheets ---
+# === Google Sheets ===
 def load_vehicle_data():
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -68,7 +69,7 @@ def append_user_to_vehicles(car_number, user_id, username):
         existing_id = row[1].strip() if len(row) > 1 else ""
 
         if existing_car == car_number:
-            if existing_id:
+            if existing_id and existing_id != str(user_id):
                 raise ValueError("Этот автомобиль уже зарегистрирован другим водителем.")
             else:
                 worksheet.update_cell(i, 2, str(user_id))
@@ -76,7 +77,7 @@ def append_user_to_vehicles(car_number, user_id, username):
                 return
     worksheet.append_row([car_number, str(user_id), username or ""])
 
-# --- Команды ---
+# === Команды ===
 async def start_handler(update: Update, context: CallbackContext):
     await update.message.reply_text("👋 Добро пожаловать!\nВыберите действие:", reply_markup=main_menu_keyboard)
     return WAITING_CAR_SEARCH
@@ -93,7 +94,7 @@ async def handle_menu_command(update: Update, context: CallbackContext):
         await update.message.reply_text("Неизвестная команда. Используйте кнопки меню.")
         return WAITING_CAR_SEARCH
 
-# --- Поиск авто ---
+# === Выбор авто ===
 async def search_car_number(update: Update, context: CallbackContext):
     partial_digits = re.sub(r"\D", "", update.message.text.strip())
 
@@ -139,7 +140,7 @@ async def choose_car_button(update: Update, context: CallbackContext):
         await query.edit_message_text("❌ Ошибка при регистрации.")
         return ConversationHandler.END
 
-# --- Фото 1 ---
+# === Фото ===
 async def handle_photo1(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     if not update.message.photo:
@@ -149,7 +150,6 @@ async def handle_photo1(update: Update, context: CallbackContext):
     await update.message.reply_text("✅ Фото 1 получено. Теперь отправьте второе.")
     return WAITING_PHOTO2
 
-# --- Фото 2 + сохранение ---
 async def handle_photo2(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -175,7 +175,6 @@ async def handle_photo2(update: Update, context: CallbackContext):
     await update.message.reply_text(f"✅ Фото 2 получено. Используем авто: {user_vehicle}\nСохраняем данные…")
     return await save_inspection(update, context)
 
-# --- Сохранение записи ---
 async def save_inspection(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     user_data = user_data_storage.get(chat_id, {})
@@ -201,13 +200,67 @@ async def save_inspection(update: Update, context: CallbackContext):
         await update.message.reply_text("⚠️ Ошибка при сохранении.")
     return ConversationHandler.END
 
-# --- Команды бота ---
+# === Админ-панель ===
+async def admin_handler(update: Update, context: CallbackContext):
+    selected_indices.clear()
+    await send_admin_keyboard(update.message, context)
+
+async def send_admin_keyboard(message_or_query, context: CallbackContext):
+    vehicle_data = load_vehicle_data()
+    keyboard = []
+    for idx, entry in enumerate(vehicle_data):
+        number = entry["Номер авто"]
+        selected = "✅" if idx in selected_indices else "◻️"
+        keyboard.append([InlineKeyboardButton(f"{selected} {number}", callback_data=f"car_{idx}")])
+    if selected_indices:
+        keyboard.append([InlineKeyboardButton("📤 Разослать напоминание", callback_data="send_notify")])
+    markup = InlineKeyboardMarkup(keyboard)
+
+    if hasattr(message_or_query, "reply_text"):
+        await message_or_query.reply_text("Выберите автомобили для рассылки:", reply_markup=markup)
+    else:
+        await message_or_query.edit_message_text("Выберите автомобили для рассылки:", reply_markup=markup)
+
+async def button_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    vehicle_data = load_vehicle_data()
+
+    if query.data.startswith("car_"):
+        idx = int(query.data.split("_")[1])
+        if idx in selected_indices:
+            selected_indices.remove(idx)
+        else:
+            selected_indices.add(idx)
+        await send_admin_keyboard(query, context)
+
+    elif query.data == "send_notify":
+        count = 0
+        for idx in selected_indices:
+            entry = vehicle_data[idx]
+            user_id = entry.get("ID (user_id)")
+            if user_id:
+                try:
+                    await context.bot.send_message(
+                        chat_id=int(user_id),
+                        text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто."
+                    )
+                    count += 1
+                except Exception as e:
+                    logger.error(f"❌ Ошибка отправки {entry['Номер авто']} → {user_id}: {e}")
+            else:
+                logger.warning(f"🚫 Нет ID у {entry['Номер авто']} — пропущено.")
+        selected_indices.clear()
+        await query.edit_message_text(f"✅ Напоминания отправлены {count} водителям.")
+
+# === Команды бота ===
 async def set_bot_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("start", "Начать работу")
+        BotCommand("start", "Начать работу"),
+        BotCommand("admin", "Панель администратора")
     ])
 
-# --- Запуск ---
+# === Запуск ===
 def main():
     app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
@@ -228,11 +281,15 @@ def main():
 
     app.add_handler(conv_handler)
 
-    # Глобальная обработка кнопок
+    # Обработка кнопок меню
     app.add_handler(MessageHandler(
         filters.TEXT & filters.Regex(r"^(🚗 Выбрать авто|📸 Отправить фото)$"),
         handle_menu_command
     ))
+
+    # Команда /admin и inline-кнопки
+    app.add_handler(CommandHandler("admin", admin_handler))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
     app.post_init = set_bot_commands
 

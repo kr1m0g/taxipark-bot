@@ -34,6 +34,7 @@ SERVICE_ACCOUNT_FILE = "credentials.json"
 # Состояния
 WAITING_CAR_SEARCH, WAITING_CAR_CHOICE, WAITING_PHOTO1, WAITING_PHOTO2, WAITING_CAR_NUMBER = range(5)
 user_data_storage = {}
+user_change_request = set()  # пользователи, которые нажали "Сменить авто"
 
 # Клавиатура
 main_menu_keyboard = ReplyKeyboardMarkup(
@@ -99,15 +100,15 @@ async def start_handler(update: Update, context: CallbackContext):
 # Обработка меню
 async def handle_menu_command(update: Update, context: CallbackContext):
     text = update.message.text.strip()
+    user_id = update.effective_user.id
 
-    if text == "🚗 Выбрать авто" or text == "🔄 Сменить авто":
-        if text == "🔄 Сменить авто":
-            user_id = update.effective_user.id
-            try:
-                remove_user_from_vehicles(user_id)
-            except Exception as e:
-                logger.error(f"Ошибка при сбросе авто: {e}")
+    if text == "🚗 Выбрать авто":
         await update.message.reply_text("Введите 3 цифры из номера автомобиля (например: 333):")
+        return WAITING_CAR_SEARCH
+
+    elif text == "🔄 Сменить авто":
+        user_change_request.add(user_id)
+        await update.message.reply_text("🔄 Ваша текущая привязка будет удалена.\nВведите 3 цифры из нового номера автомобиля:")
         return WAITING_CAR_SEARCH
 
     elif text == "📸 Отправить фото":
@@ -118,8 +119,14 @@ async def handle_menu_command(update: Update, context: CallbackContext):
         await update.message.reply_text("Неизвестная команда. Используйте кнопки меню.")
         return WAITING_CAR_SEARCH
 
-# Поиск авто по цифрам
+# Поиск авто по 3 цифрам
 async def search_car_number(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+
+    if user_id in user_change_request:
+        remove_user_from_vehicles(user_id)
+        user_change_request.remove(user_id)
+
     partial_digits = re.sub(r"\D", "", update.message.text.strip())
 
     if len(partial_digits) != 3:
@@ -214,7 +221,7 @@ async def handle_car_number(update: Update, context: CallbackContext):
         await update.message.reply_text("⚠️ Ошибка при сохранении.")
     return ConversationHandler.END
 
-# Команды бота
+# Установка команд
 async def set_bot_commands(app):
     await app.bot.set_my_commands([
         BotCommand("start", "Начать работу")

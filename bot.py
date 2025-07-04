@@ -1,4 +1,3 @@
-
 import logging
 import os
 import gspread
@@ -122,9 +121,9 @@ async def button_handler(update: Update, context: CallbackContext):
             try:
                 entry = vehicle_data[idx]
                 phone = entry["Телефон водителя"]
-			phone_str = str(phone)
-		if phone_str.startswith("+"):
-    await context.bot.send_message(chat_id=phone_str, text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто.")
+                phone_str = str(phone)
+                if phone_str.startswith("+"):
+                    await context.bot.send_message(chat_id=phone_str, text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто.")
             except Exception as e:
                 logger.error(f"Ошибка отправки уведомления: {e}")
         await query.edit_message_text("✅ Напоминания отправлены.")

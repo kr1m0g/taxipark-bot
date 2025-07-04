@@ -31,33 +31,30 @@ def append_inspection(data):
     sheet = client.open_by_key(SPREADSHEET_ID)
     sheet.worksheet("Inspections").append_row(data)
 
-# 🚫 Без дублей, обновляет строку если авто свободно
+# Обновление или добавление без дублей
 def append_user_to_vehicles(car_number, user_id, username):
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID)
     worksheet = sheet.worksheet("Vehicles")
-    existing_records = worksheet.get_all_records()
+    all_values = worksheet.get_all_values()
 
-    for i, record in enumerate(existing_records):
-        existing_car = record.get("Номер авто", "").strip().upper()
-        existing_id = str(record.get("ID (user_id)", "")).strip()
+    for i, row in enumerate(all_values[1:], start=2):
+        existing_car = row[0].strip().upper() if len(row) > 0 else ""
+        existing_id = row[1].strip() if len(row) > 1 else ""
 
         if existing_car == car_number:
             if existing_id:
                 raise ValueError("Этот автомобиль уже зарегистрирован другим водителем.")
             else:
-                row_index = i + 2  # +2 из-за заголовка
-                worksheet.update(f"B{row_index}", str(user_id))
-                worksheet.update(f"C{row_index}", username or "")
+                worksheet.update(f"B{i}", str(user_id))
+                worksheet.update(f"C{i}", username or "")
                 return
 
-    # Новый автомобиль
     worksheet.append_row([car_number, str(user_id), username or ""])
 
 # Состояния
 WAITING_CAR_SEARCH, WAITING_CAR_CHOICE, WAITING_PHOTO1, WAITING_PHOTO2, WAITING_CAR_NUMBER = range(5)
-
 user_data_storage = {}
 selected_indices = set()
 
@@ -66,7 +63,7 @@ async def start_handler(update: Update, context: CallbackContext):
     await update.message.reply_text("👋 Добро пожаловать!\nВведите любые цифры из номера автомобиля (например: 333):")
     return WAITING_CAR_SEARCH
 
-# Поиск по цифрам
+# Поиск авто по цифрам
 async def search_car_number(update: Update, context: CallbackContext):
     partial_digits = re.sub(r"\D", "", update.message.text.strip())
     if len(partial_digits) < 2:
@@ -92,7 +89,7 @@ async def search_car_number(update: Update, context: CallbackContext):
     await update.message.reply_text("Выберите ваш автомобиль:", reply_markup=InlineKeyboardMarkup(keyboard))
     return WAITING_CAR_CHOICE
 
-# Выбор авто
+# Выбор машины
 async def choose_car_button(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
@@ -132,7 +129,7 @@ async def handle_photo2(update: Update, context: CallbackContext):
     await update.message.reply_text("✅ Фото 2 получено. Теперь отправьте номер авто (например: А333АН797).")
     return WAITING_CAR_NUMBER
 
-# Финальное сохранение
+# Завершаем регистрацию
 async def handle_car_number(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     car_number = update.message.text.strip().upper()
@@ -160,7 +157,7 @@ async def admin_handler(update: Update, context: CallbackContext):
     selected_indices.clear()
     await send_admin_keyboard(update.message, context)
 
-# Общая клавиатура
+# Клавиатура админа
 async def send_admin_keyboard(message_or_query, context: CallbackContext):
     vehicle_data = load_vehicle_data()
     keyboard = []
@@ -177,7 +174,7 @@ async def send_admin_keyboard(message_or_query, context: CallbackContext):
     else:
         await message_or_query.edit_message_text("Выберите автомобили:", reply_markup=markup)
 
-# Обработка кнопок
+# Обработка кнопок админа
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
@@ -201,7 +198,6 @@ async def button_handler(update: Update, context: CallbackContext):
                         chat_id=int(user_id),
                         text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто."
                     )
-                    logger.info(f"✅ Уведомление отправлено: {entry['Номер авто']} → {user_id}")
                 except Exception as e:
                     logger.error(f"❌ Ошибка отправки {entry['Номер авто']} → {user_id}: {e}")
             else:

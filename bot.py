@@ -26,26 +26,25 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Переменные
+# Google Sheets
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 SERVICE_ACCOUNT_FILE = "credentials.json"
 
 # Состояния
-WAITING_CAR_SEARCH, WAITING_CAR_CHOICE, WAITING_PHOTO1, WAITING_PHOTO2, WAITING_CAR_NUMBER = range(5)
+WAITING_CAR_SEARCH, WAITING_CAR_CHOICE, WAITING_PHOTO1, WAITING_PHOTO2 = range(4)
 user_data_storage = {}
-user_change_request = set()  # пользователи, которые нажали "Сменить авто"
 
-# Клавиатура
+# Главное меню
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        ["🚗 Выбрать авто", "🔄 Сменить авто"],
+        ["🚗 Выбрать авто"],
         ["📸 Отправить фото"]
     ],
     resize_keyboard=True
 )
 
-# Google Sheets
+# --- Google Sheets ---
 def load_vehicle_data():
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -77,59 +76,26 @@ def append_user_to_vehicles(car_number, user_id, username):
                 return
     worksheet.append_row([car_number, str(user_id), username or ""])
 
-def remove_user_from_vehicles(user_id):
-    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    client = gspread.authorize(creds)
-    worksheet = client.open_by_key(SPREADSHEET_ID).worksheet("Vehicles")
-    all_values = worksheet.get_all_values()
-
-    for i, row in enumerate(all_values[1:], start=2):
-        if len(row) >= 2 and row[1] == str(user_id):
-            worksheet.update_cell(i, 2, "")
-            worksheet.update_cell(i, 3, "")
-            break
-
-# Старт
+# --- Команды ---
 async def start_handler(update: Update, context: CallbackContext):
-    await update.message.reply_text(
-        "👋 Добро пожаловать!\nВыберите действие:",
-        reply_markup=main_menu_keyboard
-    )
+    await update.message.reply_text("👋 Добро пожаловать!\nВыберите действие:", reply_markup=main_menu_keyboard)
     return WAITING_CAR_SEARCH
 
-# Обработка меню
 async def handle_menu_command(update: Update, context: CallbackContext):
     text = update.message.text.strip()
-    user_id = update.effective_user.id
-
     if text == "🚗 Выбрать авто":
         await update.message.reply_text("Введите 3 цифры из номера автомобиля (например: 333):")
         return WAITING_CAR_SEARCH
-
-    elif text == "🔄 Сменить авто":
-        user_change_request.add(user_id)
-        await update.message.reply_text("🔄 Ваша текущая привязка будет удалена.\nВведите 3 цифры из нового номера автомобиля:")
-        return WAITING_CAR_SEARCH
-
     elif text == "📸 Отправить фото":
         await update.message.reply_text("Пожалуйста, отправьте первое фото.")
         return WAITING_PHOTO1
-
     else:
         await update.message.reply_text("Неизвестная команда. Используйте кнопки меню.")
         return WAITING_CAR_SEARCH
 
-# Поиск авто по 3 цифрам
+# --- Поиск авто ---
 async def search_car_number(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    # Очистить старую привязку, если была нажата "Сменить авто"
-    if user_id in user_change_request:
-        remove_user_from_vehicles(user_id)
-        user_change_request.remove(user_id)
-
-    partial_digits = re.sub(r"\D", "", text)
+    partial_digits = re.sub(r"\D", "", update.message.text.strip())
 
     if len(partial_digits) != 3:
         await update.message.reply_text("Введите ровно 3 цифры, например: 333")
@@ -137,7 +103,6 @@ async def search_car_number(update: Update, context: CallbackContext):
 
     vehicle_data = load_vehicle_data()
     matches = []
-
     for v in vehicle_data:
         car_number = v["Номер авто"]
         match_digits = re.findall(r"^[А-ЯA-Z]{1}(\d{3})", car_number)
@@ -152,13 +117,9 @@ async def search_car_number(update: Update, context: CallbackContext):
         [InlineKeyboardButton(v["Номер авто"], callback_data=f"choose_{v['Номер авто']}")]
         for v in matches
     ]
-    await update.message.reply_text(
-        "Выберите ваш автомобиль из списка:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text("Выберите ваш автомобиль из списка:", reply_markup=InlineKeyboardMarkup(keyboard))
     return WAITING_CAR_CHOICE
 
-# Выбор машины
 async def choose_car_button(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
@@ -170,17 +131,15 @@ async def choose_car_button(update: Update, context: CallbackContext):
         append_user_to_vehicles(car_number, user_id, username)
         await query.edit_message_text(f"✅ Вы выбрали: {car_number}\nОтправьте первое фото.")
         return WAITING_PHOTO1
-
-    except ValueError:
-        await query.edit_message_text("🚫 Этот автомобиль уже занят.\nНажмите '🚗 Выбрать авто' и попробуйте снова.")
+    except ValueError as ve:
+        await query.edit_message_text(f"🚫 {ve}")
         return WAITING_CAR_SEARCH
-
     except Exception as e:
         logger.error(f"Ошибка регистрации: {e}")
         await query.edit_message_text("❌ Ошибка при регистрации.")
         return ConversationHandler.END
 
-# Фото 1
+# --- Фото 1 ---
 async def handle_photo1(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     if not update.message.photo:
@@ -190,30 +149,49 @@ async def handle_photo1(update: Update, context: CallbackContext):
     await update.message.reply_text("✅ Фото 1 получено. Теперь отправьте второе.")
     return WAITING_PHOTO2
 
-# Фото 2
+# --- Фото 2 + сохранение ---
 async def handle_photo2(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
     if not update.message.photo:
         await update.message.reply_text("Пожалуйста, отправьте фотографию.")
         return WAITING_PHOTO2
-    user_data_storage[chat_id]["photo2"] = update.message.photo[-1].file_id
-    await update.message.reply_text("✅ Фото 2 получено. Теперь отправьте номер авто (например: А333АН797).")
-    return WAITING_CAR_NUMBER
 
-# Завершение
-async def handle_car_number(update: Update, context: CallbackContext):
+    user_data_storage[chat_id]["photo2"] = update.message.photo[-1].file_id
+
+    vehicle_data = load_vehicle_data()
+    user_vehicle = None
+    for v in vehicle_data:
+        if str(v.get("ID (user_id)", "")).strip() == str(user_id):
+            user_vehicle = v.get("Номер авто")
+            break
+
+    if not user_vehicle:
+        await update.message.reply_text("⚠️ Вы ещё не выбрали автомобиль.\nНажмите \"🚗 Выбрать авто\".")
+        return WAITING_CAR_SEARCH
+
+    user_data_storage[chat_id]["car_number"] = user_vehicle
+    await update.message.reply_text(f"✅ Фото 2 получено. Используем авто: {user_vehicle}\nСохраняем данные…")
+    return await save_inspection(update, context)
+
+# --- Сохранение записи ---
+async def save_inspection(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
-    car_number = update.message.text.strip().upper()
     user_data = user_data_storage.get(chat_id, {})
+    car_number = user_data.get("car_number")
+    username = update.effective_user.username or ""
+    user_id = update.effective_user.id
+
     now = datetime.now()
     row = [
         now.strftime("%d.%m.%Y"),
         now.strftime("%H:%M"),
         car_number,
-        update.effective_user.username or "",
+        username,
         user_data.get("photo1"),
         user_data.get("photo2"),
-        update.effective_user.id
+        user_id
     ]
     try:
         append_inspection(row)
@@ -223,16 +201,13 @@ async def handle_car_number(update: Update, context: CallbackContext):
         await update.message.reply_text("⚠️ Ошибка при сохранении.")
     return ConversationHandler.END
 
-# Установка команд
+# --- Команды бота ---
 async def set_bot_commands(app):
     await app.bot.set_my_commands([
         BotCommand("start", "Начать работу")
     ])
 
-# Запуск
-# ... [весь остальной код остаётся как был] ...
-
-# === Запуск ===
+# --- Запуск ---
 def main():
     app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
@@ -240,32 +215,27 @@ def main():
         entry_points=[CommandHandler("start", start_handler)],
         states={
             WAITING_CAR_SEARCH: [
-                MessageHandler(filters.Regex(r"^\d{3}$"), search_car_number),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_command)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, search_car_number)
             ],
             WAITING_CAR_CHOICE: [
                 CallbackQueryHandler(choose_car_button, pattern=r"^choose_")
             ],
             WAITING_PHOTO1: [MessageHandler(filters.PHOTO, handle_photo1)],
             WAITING_PHOTO2: [MessageHandler(filters.PHOTO, handle_photo2)],
-            WAITING_CAR_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_car_number)],
         },
         fallbacks=[],
     )
 
-    # Добавляем ConversationHandler
     app.add_handler(conv_handler)
 
-    # ✅ Глобальная обработка кнопок меню — работает в любом состоянии
+    # Глобальная обработка кнопок
     app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r"^(🚗 Выбрать авто|🔄 Сменить авто|📸 Отправить фото)$"),
+        filters.TEXT & filters.Regex(r"^(🚗 Выбрать авто|📸 Отправить фото)$"),
         handle_menu_command
     ))
 
-    # Установка команд бота
     app.post_init = set_bot_commands
 
-    # Запуск через вебхук
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 8443)),

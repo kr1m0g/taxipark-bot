@@ -2,3 +2,4 @@ python-telegram-bot==20.0
 python-dotenv
 gspread
 google-auth
+oauth2client==4.1.3

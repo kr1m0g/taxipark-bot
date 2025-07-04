@@ -19,7 +19,7 @@ SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
 # Авторизация Google Sheets
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
+creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 client = gspread.authorize(creds)
 
 sheet = client.open_by_key(SPREADSHEET_ID)

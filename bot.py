@@ -35,7 +35,7 @@ SERVICE_ACCOUNT_FILE = "credentials.json"
 WAITING_CAR_SEARCH, WAITING_CAR_CHOICE, WAITING_PHOTO1, WAITING_PHOTO2, WAITING_CAR_NUMBER = range(5)
 user_data_storage = {}
 
-# Reply-клавиатура
+# Клавиатура
 main_menu_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         ["🚗 Выбрать авто", "🔄 Сменить авто"],
@@ -88,7 +88,7 @@ def remove_user_from_vehicles(user_id):
             worksheet.update_cell(i, 3, "")
             break
 
-# Обработчики
+# Старт
 async def start_handler(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "👋 Добро пожаловать!\nВыберите действие:",
@@ -96,6 +96,7 @@ async def start_handler(update: Update, context: CallbackContext):
     )
     return WAITING_CAR_SEARCH
 
+# Обработка меню
 async def handle_menu_command(update: Update, context: CallbackContext):
     text = update.message.text.strip()
 
@@ -117,6 +118,7 @@ async def handle_menu_command(update: Update, context: CallbackContext):
         await update.message.reply_text("Неизвестная команда. Используйте кнопки меню.")
         return WAITING_CAR_SEARCH
 
+# Поиск авто по цифрам
 async def search_car_number(update: Update, context: CallbackContext):
     partial_digits = re.sub(r"\D", "", update.message.text.strip())
 
@@ -129,7 +131,6 @@ async def search_car_number(update: Update, context: CallbackContext):
 
     for v in vehicle_data:
         car_number = v["Номер авто"]
-        # Извлекаем 3 цифры после первой буквы
         match_digits = re.findall(r"^[А-ЯA-Z]{1}(\d{3})", car_number)
         if match_digits and match_digits[0] == partial_digits:
             matches.append(v)
@@ -148,6 +149,7 @@ async def search_car_number(update: Update, context: CallbackContext):
     )
     return WAITING_CAR_CHOICE
 
+# Выбор машины
 async def choose_car_button(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
@@ -169,6 +171,7 @@ async def choose_car_button(update: Update, context: CallbackContext):
         await query.edit_message_text("❌ Ошибка при регистрации.")
         return ConversationHandler.END
 
+# Фото 1
 async def handle_photo1(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     if not update.message.photo:
@@ -178,6 +181,7 @@ async def handle_photo1(update: Update, context: CallbackContext):
     await update.message.reply_text("✅ Фото 1 получено. Теперь отправьте второе.")
     return WAITING_PHOTO2
 
+# Фото 2
 async def handle_photo2(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     if not update.message.photo:
@@ -187,6 +191,7 @@ async def handle_photo2(update: Update, context: CallbackContext):
     await update.message.reply_text("✅ Фото 2 получено. Теперь отправьте номер авто (например: А333АН797).")
     return WAITING_CAR_NUMBER
 
+# Завершение
 async def handle_car_number(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     car_number = update.message.text.strip().upper()
@@ -209,9 +214,10 @@ async def handle_car_number(update: Update, context: CallbackContext):
         await update.message.reply_text("⚠️ Ошибка при сохранении.")
     return ConversationHandler.END
 
+# Команды бота
 async def set_bot_commands(app):
     await app.bot.set_my_commands([
-        BotCommand("start", "Начать")
+        BotCommand("start", "Начать работу")
     ])
 
 # Запуск
@@ -222,8 +228,8 @@ def main():
         entry_points=[CommandHandler("start", start_handler)],
         states={
             WAITING_CAR_SEARCH: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_command),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, search_car_number)
+                MessageHandler(filters.Regex(r"^\d{3}$"), search_car_number),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_command)
             ],
             WAITING_CAR_CHOICE: [
                 CallbackQueryHandler(choose_car_button, pattern=r"^choose_")

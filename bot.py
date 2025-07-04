@@ -148,18 +148,22 @@ async def admin_handler(update: Update, context: CallbackContext):
 async def send_admin_keyboard(message_or_query, context: CallbackContext):
     vehicle_data = load_vehicle_data()
     keyboard = []
+
     for idx, entry in enumerate(vehicle_data):
         number = entry["Номер авто"]
         selected = "✅" if idx in selected_indices else "◻️"
         keyboard.append([InlineKeyboardButton(f"{selected} {number}", callback_data=f"car_{idx}")])
+
     if selected_indices:
         keyboard.append([InlineKeyboardButton("📤 Разослать напоминание", callback_data="send_notify")])
+
     markup = InlineKeyboardMarkup(keyboard)
-    if isinstance(message_or_query, Update):
+
+    # Правильная обработка: если это сообщение → reply_text, если callback → edit_message_text
+    if hasattr(message_or_query, "reply_text"):
         await message_or_query.reply_text("Выберите автомобили:", reply_markup=markup)
     else:
         await message_or_query.edit_message_text("Выберите автомобили:", reply_markup=markup)
-
 # Обработка кнопок
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query

@@ -228,6 +228,9 @@ async def set_bot_commands(app):
     ])
 
 # Запуск
+# ... [весь остальной код остаётся как был] ...
+
+# === Запуск ===
 def main():
     app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
@@ -248,8 +251,19 @@ def main():
         fallbacks=[],
     )
 
+    # Добавляем ConversationHandler
     app.add_handler(conv_handler)
+
+    # ✅ Глобальная обработка кнопок меню — работает в любом состоянии
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^(🚗 Выбрать авто|🔄 Сменить авто|📸 Отправить фото)$"),
+        handle_menu_command
+    ))
+
+    # Установка команд бота
     app.post_init = set_bot_commands
+
+    # Запуск через вебхук
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 8443)),

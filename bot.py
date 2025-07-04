@@ -122,12 +122,14 @@ async def handle_menu_command(update: Update, context: CallbackContext):
 # Поиск авто по 3 цифрам
 async def search_car_number(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
+    text = update.message.text.strip()
 
+    # Очистить старую привязку, если была нажата "Сменить авто"
     if user_id in user_change_request:
         remove_user_from_vehicles(user_id)
         user_change_request.remove(user_id)
 
-    partial_digits = re.sub(r"\D", "", update.message.text.strip())
+    partial_digits = re.sub(r"\D", "", text)
 
     if len(partial_digits) != 3:
         await update.message.reply_text("Введите ровно 3 цифры, например: 333")

@@ -171,16 +171,19 @@ async def button_handler(update: Update, context: CallbackContext):
                 entry = vehicle_data[idx]
                 user_id = entry.get("ID")
                 if user_id:
-                    await context.bot.send_message(chat_id=int(user_id),
-                        text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто.")
+                    await context.bot.send_message(
+                        chat_id=int(user_id),
+                        text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто."
+                    )
             except Exception as e:
                 logger.error(f"Ошибка отправки уведомления: {e}")
         await query.edit_message_text("✅ Напоминания отправлены.")
 
-# Запуск бота
+# Webhook-запуск
 def main():
     app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
+    # Conversation
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_handler)],
         states={
@@ -197,7 +200,12 @@ def main():
     app.add_handler(CommandHandler("admin", admin_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    app.run_polling()
+    # Webhook-запуск
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 8443)),
+        webhook_url=os.getenv("WEBHOOK_URL")
+    )
 
 if __name__ == "__main__":
     main()

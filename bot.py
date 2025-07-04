@@ -31,7 +31,6 @@ def append_inspection(data):
     sheet = client.open_by_key(SPREADSHEET_ID)
     sheet.worksheet("Inspections").append_row(data)
 
-# Обновление или добавление без дублей
 def append_user_to_vehicles(car_number, user_id, username):
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
@@ -39,7 +38,7 @@ def append_user_to_vehicles(car_number, user_id, username):
     worksheet = sheet.worksheet("Vehicles")
     all_values = worksheet.get_all_values()
 
-    for i, row in enumerate(all_values[1:], start=2):  # с 2 строки
+    for i, row in enumerate(all_values[1:], start=2):
         existing_car = row[0].strip().upper() if len(row) > 0 else ""
         existing_id = row[1].strip() if len(row) > 1 else ""
 
@@ -47,12 +46,22 @@ def append_user_to_vehicles(car_number, user_id, username):
             if existing_id:
                 raise ValueError("Этот автомобиль уже зарегистрирован другим водителем.")
             else:
-                worksheet.update_cell(i, 2, str(user_id))  # B
-                worksheet.update_cell(i, 3, username or "")  # C
+                worksheet.update_cell(i, 2, str(user_id))
+                worksheet.update_cell(i, 3, username or "")
                 return
-
-    # если не нашли — добавляем новую строку
     worksheet.append_row([car_number, str(user_id), username or ""])
+
+def remove_user_from_vehicles(user_id):
+    creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    client = gspread.authorize(creds)
+    worksheet = client.open_by_key(SPREADSHEET_ID).worksheet("Vehicles")
+    all_values = worksheet.get_all_values()
+
+    for i, row in enumerate(all_values[1:], start=2):
+        if len(row) >= 2 and row[1] == str(user_id):
+            worksheet.update_cell(i, 2, "")
+            worksheet.update_cell(i, 3, "")
+            break
 
 # Состояния
 WAITING_CAR_SEARCH, WAITING_CAR_CHOICE, WAITING_PHOTO1, WAITING_PHOTO2, WAITING_CAR_NUMBER = range(5)
@@ -100,7 +109,12 @@ async def choose_car_button(update: Update, context: CallbackContext):
 
     try:
         append_user_to_vehicles(car_number, user_id, username)
-        await query.edit_message_text(f"✅ Вы выбрали: {car_number}\nОтправьте первое фото.")
+        await query.edit_message_text(
+            f"✅ Вы выбрали: {car_number}\nОтправьте первое фото.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Сменить авто", callback_data="change_car")]
+            ])
+        )
         return WAITING_PHOTO1
     except ValueError as ve:
         await query.edit_message_text(f"🚫 {ve}")
@@ -108,6 +122,21 @@ async def choose_car_button(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"Ошибка регистрации: {e}")
         await query.edit_message_text("❌ Ошибка при регистрации.")
+        return ConversationHandler.END
+
+# Обработка смены автомобиля
+async def change_car_button(update: Update, context: CallbackContext):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    try:
+        remove_user_from_vehicles(user_id)
+        await query.edit_message_text("🔄 Давайте выберем другой автомобиль.\nВведите цифры из номера:")
+        return WAITING_CAR_SEARCH
+    except Exception as e:
+        logger.error(f"Ошибка при смене авто: {e}")
+        await query.edit_message_text("❌ Не удалось сменить автомобиль.")
         return ConversationHandler.END
 
 # Фото 1
@@ -214,7 +243,10 @@ def main():
         entry_points=[CommandHandler("start", start_handler)],
         states={
             WAITING_CAR_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_car_number)],
-            WAITING_CAR_CHOICE: [CallbackQueryHandler(choose_car_button, pattern=r"^choose_")],
+            WAITING_CAR_CHOICE: [
+                CallbackQueryHandler(choose_car_button, pattern=r"^choose_"),
+                CallbackQueryHandler(change_car_button, pattern=r"^change_car$")
+            ],
             WAITING_PHOTO1: [MessageHandler(filters.PHOTO, handle_photo1)],
             WAITING_PHOTO2: [MessageHandler(filters.PHOTO, handle_photo2)],
             WAITING_CAR_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_car_number)],

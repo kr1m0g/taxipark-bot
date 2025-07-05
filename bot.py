@@ -1,303 +1,181 @@
-import os
 import logging
-import re
+import os
+import gspread
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackContext,
+    CallbackQueryHandler, MessageHandler, filters, ConversationHandler
+)
+from google.oauth2.service_account import Credentials
 from datetime import datetime
 
-import gspread
-from google.oauth2.service_account import Credentials
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
-    BotCommand
-)
-from telegram.ext import (
-    ApplicationBuilder,
-    CallbackContext,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ConversationHandler,
-    filters,
-)
-
-# Логирование
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Google Sheets
+# Настройки Google Sheets
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 SERVICE_ACCOUNT_FILE = "credentials.json"
 
-# Состояния
-WAITING_CAR_SEARCH, WAITING_CAR_CHOICE, WAITING_PHOTO1, WAITING_PHOTO2 = range(4)
-user_data_storage = {}
-selected_indices = set()
-
-# Главное меню
-main_menu_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        ["🚗 Выбрать авто"],
-        ["📸 Отправить фото"]
-    ],
-    resize_keyboard=True
-)
-
-# === Google Sheets ===
+# Чтение таблицы
 def load_vehicle_data():
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID)
-    return sheet.worksheet("Vehicles").get_all_records()
+    worksheet = sheet.worksheet("Vehicles")
+    data = worksheet.get_all_records()
+    return data
 
 def append_inspection(data):
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID)
-    sheet.worksheet("Inspections").append_row(data)
+    worksheet = sheet.worksheet("Inspections")
+    worksheet.append_row(data)
 
 def append_user_to_vehicles(car_number, user_id, username):
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     client = gspread.authorize(creds)
-    worksheet = client.open_by_key(SPREADSHEET_ID).worksheet("Vehicles")
-    all_values = worksheet.get_all_values()
+    sheet = client.open_by_key(SPREADSHEET_ID)
+    worksheet = sheet.worksheet("Vehicles")
+    existing_records = worksheet.get_all_records()
+    for record in existing_records:
+        if str(record.get("ID", "")) == str(user_id):
+            return
+    worksheet.append_row([car_number, username or "", str(user_id)])
 
-    for i, row in enumerate(all_values[1:], start=2):
-        existing_car = row[0].strip().upper() if len(row) > 0 else ""
-        existing_id = row[1].strip() if len(row) > 1 else ""
+# Состояния
+WAITING_CAR_REGISTRATION, WAITING_PHOTO1, WAITING_PHOTO2, WAITING_CAR_NUMBER = range(4)
 
-        if existing_car == car_number:
-            if existing_id and existing_id != str(user_id):
-                raise ValueError("Этот автомобиль уже зарегистрирован другим водителем.")
-            else:
-                worksheet.update_cell(i, 2, str(user_id))
-                worksheet.update_cell(i, 3, username or "")
-                return
-    worksheet.append_row([car_number, str(user_id), username or ""])
+user_data_storage = {}
 
-# === Команды ===
+# Хендлер команды /start
 async def start_handler(update: Update, context: CallbackContext):
-    await update.message.reply_text("👋 Добро пожаловать!\nВыберите действие:", reply_markup=main_menu_keyboard)
-    return WAITING_CAR_SEARCH
+    await update.message.reply_text("👋 Добро пожаловать!\nПожалуйста, введите номер вашего автомобиля (например: А123АА):")
+    return WAITING_CAR_REGISTRATION
 
-async def handle_menu_command(update: Update, context: CallbackContext):
-    text = update.message.text.strip()
-    if text == "🚗 Выбрать авто":
-        await update.message.reply_text("Введите 3 цифры из номера автомобиля (например: 333):")
-        return WAITING_CAR_SEARCH
-    elif text == "📸 Отправить фото":
-        await update.message.reply_text("Пожалуйста, отправьте первое фото.")
-        return WAITING_PHOTO1
-    else:
-        await update.message.reply_text("Неизвестная команда. Используйте кнопки меню.")
-        return WAITING_CAR_SEARCH
-
-# === Выбор авто ===
-async def search_car_number(update: Update, context: CallbackContext):
-    partial_digits = re.sub(r"\D", "", update.message.text.strip())
-
-    if len(partial_digits) != 3:
-        await update.message.reply_text("Введите ровно 3 цифры, например: 333")
-        return WAITING_CAR_SEARCH
-
-    vehicle_data = load_vehicle_data()
-    matches = []
-    for v in vehicle_data:
-        car_number = v["Номер авто"]
-        match_digits = re.findall(r"^[А-ЯA-Z]{1}(\d{3})", car_number)
-        if match_digits and match_digits[0] == partial_digits:
-            matches.append(v)
-
-    if not matches:
-        await update.message.reply_text("🚫 Машины с такими цифрами не найдены.")
-        return WAITING_CAR_SEARCH
-
-    keyboard = [
-        [InlineKeyboardButton(v["Номер авто"], callback_data=f"choose_{v['Номер авто']}")]
-        for v in matches
-    ]
-    await update.message.reply_text("Выберите ваш автомобиль из списка:", reply_markup=InlineKeyboardMarkup(keyboard))
-    return WAITING_CAR_CHOICE
-
-async def choose_car_button(update: Update, context: CallbackContext):
-    query = update.callback_query
-    await query.answer()
-    car_number = query.data.replace("choose_", "")
-    user_id = query.from_user.id
-    username = query.from_user.username
-
+# Обработка номера авто при регистрации
+async def register_car_number(update: Update, context: CallbackContext):
+    car_number = update.message.text.strip().upper()
+    user_id = update.effective_user.id
+    username = update.effective_user.username
     try:
         append_user_to_vehicles(car_number, user_id, username)
-        await query.edit_message_text(f"✅ Вы выбрали: {car_number}\nОтправьте первое фото.")
+        await update.message.reply_text("✅ Вы успешно зарегистрированы! Теперь отправьте первое фото автомобиля.")
         return WAITING_PHOTO1
-    except ValueError as ve:
-        await query.edit_message_text(f"🚫 {ve}")
-        return WAITING_CAR_SEARCH
     except Exception as e:
-        logger.error(f"Ошибка регистрации: {e}")
-        await query.edit_message_text("❌ Ошибка при регистрации.")
+        logger.error(f"Ошибка добавления пользователя в Vehicles: {e}")
+        await update.message.reply_text("⚠️ Ошибка при регистрации. Попробуйте позже.")
         return ConversationHandler.END
 
-# === Фото ===
+# Фото 1
 async def handle_photo1(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
     if not update.message.photo:
         await update.message.reply_text("Пожалуйста, отправьте фотографию.")
         return WAITING_PHOTO1
-    user_data_storage[chat_id] = {"photo1": update.message.photo[-1].file_id}
-    await update.message.reply_text("✅ Фото 1 получено. Теперь отправьте второе.")
+    file_id = update.message.photo[-1].file_id
+    user_data_storage[chat_id] = {"photo1": file_id}
+    await update.message.reply_text("✅ Фото 1 получено. Теперь отправьте второе фото.")
     return WAITING_PHOTO2
 
+# Фото 2
 async def handle_photo2(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-
     if not update.message.photo:
         await update.message.reply_text("Пожалуйста, отправьте фотографию.")
         return WAITING_PHOTO2
+    file_id = update.message.photo[-1].file_id
+    user_data_storage[chat_id]["photo2"] = file_id
+    await update.message.reply_text("✅ Фото 2 получено. Теперь отправьте номер автомобиля (например: А123АА).")
+    return WAITING_CAR_NUMBER
 
-    user_data_storage[chat_id]["photo2"] = update.message.photo[-1].file_id
-
-    vehicle_data = load_vehicle_data()
-    user_vehicle = None
-    for v in vehicle_data:
-        if str(v.get("ID (user_id)", "")).strip() == str(user_id):
-            user_vehicle = v.get("Номер авто")
-            break
-
-    if not user_vehicle:
-        await update.message.reply_text("⚠️ Вы ещё не выбрали автомобиль.\nНажмите \"🚗 Выбрать авто\".")
-        return WAITING_CAR_SEARCH
-
-    user_data_storage[chat_id]["car_number"] = user_vehicle
-    await update.message.reply_text(f"✅ Фото 2 получено. Используем авто: {user_vehicle}\nСохраняем данные…")
-    return await save_inspection(update, context)
-
-async def save_inspection(update: Update, context: CallbackContext):
+# Финальное сохранение
+async def handle_car_number(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
+    car_number = update.message.text.strip().upper()
     user_data = user_data_storage.get(chat_id, {})
-    car_number = user_data.get("car_number")
-    username = update.effective_user.username or ""
-    user_id = update.effective_user.id
-
+    photo1 = user_data.get("photo1")
+    photo2 = user_data.get("photo2")
+    phone = update.effective_user.username or update.effective_user.id
     now = datetime.now()
     row = [
         now.strftime("%d.%m.%Y"),
         now.strftime("%H:%M"),
         car_number,
-        username,
-        user_data.get("photo1"),
-        user_data.get("photo2"),
-        user_id
+        phone,
+        photo1,
+        photo2,
+        update.effective_user.id
     ]
     try:
         append_inspection(row)
-        await update.message.reply_text("✅ Всё сохранено. Спасибо!")
+        await update.message.reply_text("✅ Данные успешно сохранены. Спасибо!")
     except Exception as e:
-        logger.error(f"Ошибка записи: {e}")
-        await update.message.reply_text("⚠️ Ошибка при сохранении.")
+        logger.error(f"Ошибка записи в таблицу: {e}")
+        await update.message.reply_text("⚠️ Ошибка при сохранении данных.")
     return ConversationHandler.END
 
-# === Админ-панель ===
+# Админ-панель
 async def admin_handler(update: Update, context: CallbackContext):
-    selected_indices.clear()
-    await send_admin_keyboard(update.message, context)
-
-async def send_admin_keyboard(message_or_query, context: CallbackContext):
     vehicle_data = load_vehicle_data()
     keyboard = []
     for idx, entry in enumerate(vehicle_data):
         number = entry["Номер авто"]
-        selected = "✅" if idx in selected_indices else "◻️"
-        keyboard.append([InlineKeyboardButton(f"{selected} {number}", callback_data=f"car_{idx}")])
-    if selected_indices:
-        keyboard.append([InlineKeyboardButton("📤 Разослать напоминание", callback_data="send_notify")])
-    markup = InlineKeyboardMarkup(keyboard)
+        keyboard.append([InlineKeyboardButton(f"🚘 {number}", callback_data=f"car_{idx}")])
+    keyboard.append([InlineKeyboardButton("📤 Разослать напоминание", callback_data="send_notify")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Выберите автомобили и отправьте напоминание:", reply_markup=reply_markup)
 
-    if hasattr(message_or_query, "reply_text"):
-        await message_or_query.reply_text("Выберите автомобили для рассылки:", reply_markup=markup)
-    else:
-        await message_or_query.edit_message_text("Выберите автомобили для рассылки:", reply_markup=markup)
+# Выбор и рассылка
+selected_indices = set()
 
 async def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
-    vehicle_data = load_vehicle_data()
-
     if query.data.startswith("car_"):
         idx = int(query.data.split("_")[1])
         if idx in selected_indices:
             selected_indices.remove(idx)
         else:
             selected_indices.add(idx)
-        await send_admin_keyboard(query, context)
-
+        await query.edit_message_text("✅ Автомобили выбраны. Нажмите '📤 Разослать напоминание'.")
     elif query.data == "send_notify":
-        count = 0
+        vehicle_data = load_vehicle_data()
         for idx in selected_indices:
-            entry = vehicle_data[idx]
-            user_id = entry.get("ID (user_id)")
-            if user_id:
-                try:
-                    await context.bot.send_message(
-                        chat_id=int(user_id),
-                        text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто."
-                    )
-                    count += 1
-                except Exception as e:
-                    logger.error(f"❌ Ошибка отправки {entry['Номер авто']} → {user_id}: {e}")
-            else:
-                logger.warning(f"🚫 Нет ID у {entry['Номер авто']} — пропущено.")
-        selected_indices.clear()
-        await query.edit_message_text(f"✅ Напоминания отправлены {count} водителям.")
+            try:
+                entry = vehicle_data[idx]
+                phone = entry["Телефон водителя"]
+                phone_str = str(phone)
+                if phone_str.startswith("+"):
+                    await context.bot.send_message(chat_id=phone_str, text="📸 Пожалуйста, пришлите 2 фото автомобиля и номер авто.")
+            except Exception as e:
+                logger.error(f"Ошибка отправки уведомления: {e}")
+        await query.edit_message_text("✅ Напоминания отправлены.")
 
-# === Команды бота ===
-async def set_bot_commands(app):
-    await app.bot.set_my_commands([
-        BotCommand("start", "Начать работу"),
-        BotCommand("admin", "Панель администратора")
-    ])
-
-# === Запуск ===
+# Запуск
 def main():
     app = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start_handler)],
+        entry_points=[
+            CommandHandler("start", start_handler),
+            MessageHandler(filters.PHOTO, handle_photo1),
+        ],
         states={
-            WAITING_CAR_SEARCH: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, search_car_number)
-            ],
-            WAITING_CAR_CHOICE: [
-                CallbackQueryHandler(choose_car_button, pattern=r"^choose_")
-            ],
-            WAITING_PHOTO1: [MessageHandler(filters.PHOTO, handle_photo1)],
+            WAITING_CAR_REGISTRATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_car_number)],
             WAITING_PHOTO2: [MessageHandler(filters.PHOTO, handle_photo2)],
+            WAITING_CAR_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_car_number)],
         },
         fallbacks=[],
     )
 
     app.add_handler(conv_handler)
-
-    # Обработка кнопок меню
-    app.add_handler(MessageHandler(
-        filters.TEXT & filters.Regex(r"^(🚗 Выбрать авто|📸 Отправить фото)$"),
-        handle_menu_command
-    ))
-
-    # Команда /admin и inline-кнопки
     app.add_handler(CommandHandler("admin", admin_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    app.post_init = set_bot_commands
-
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8443)),
-        webhook_url=os.getenv("WEBHOOK_URL")
-    )
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
